@@ -90,6 +90,11 @@ h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
 .btn{display:block;width:100%;padding:13px;border-radius:12px;background:var(--surface-2);font-weight:600;text-align:center;margin-top:8px}
 .btn.primary{background:var(--accent);color:var(--accent-ink)}
 .small{font-size:13px!important}
+a.btn{text-decoration:none;color:var(--text)}
+.card input.field{width:100%;font-size:16px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--bg);margin-top:8px}
+.status{font-size:14px!important;display:flex;gap:8px;align-items:center}
+.status i{width:8px;height:8px;border-radius:50%;background:#2e8b57;flex:none}
+.status.bad i{background:var(--warn)}
 
 /* week */
 .days{display:flex;justify-content:space-between;align-items:flex-end;height:110px;gap:6px;padding:0 4px}
@@ -203,7 +208,54 @@ function load() {
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save on this device'); }
+  scheduleSync();
 }
+
+/* ---------- widget sync (private GitHub gist read by the Scriptable widget) ---------- */
+const SYNC_KEY = 'today-sync-v1';   // kept apart from S so backups never contain the key
+let SY = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch (e) { return {}; } })();
+function saveSync() { try { localStorage.setItem(SYNC_KEY, JSON.stringify(SY)); } catch (e) {} }
+const ghHeaders = tok => ({ Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' });
+function widgetPayload() {
+  const t = today(), all = S.tasks.filter(k => k.date === t);
+  const m = k => ({ title: k.title, color: G(k.goal)?.color || null });
+  return { v: 1, date: t, updated: new Date().toISOString(), done: all.filter(k => k.done).length, total: all.length,
+    must: all.filter(k => k.must && !k.done).map(m), rest: all.filter(k => !k.must && !k.done).map(m),
+    goals: S.goals.map(g => ({ title: g.title, color: g.color })) };
+}
+let syncTimer, lastSent = '';
+function scheduleSync() {
+  if (!SY.token || !SY.gistId) return;
+  clearTimeout(syncTimer); syncTimer = setTimeout(pushSync, 1200);
+}
+async function pushSync(keepalive = false) {
+  clearTimeout(syncTimer);
+  if (!SY.token || !SY.gistId) return;
+  const p = widgetPayload(), sig = JSON.stringify({ ...p, updated: 0 });
+  if (sig === lastSent) return;
+  try {
+    const r = await fetch(`https://api.github.com/gists/${SY.gistId}`, { method: 'PATCH', headers: ghHeaders(SY.token), keepalive,
+      body: JSON.stringify({ files: { 'today.json': { content: JSON.stringify(p) } } }) });
+    if (!r.ok) throw new Error(r.status === 401 ? 'GitHub key stopped working. Disconnect and connect again with a new key.'
+      : r.status === 404 ? 'Widget note not found on GitHub. Disconnect and connect again.' : 'GitHub error ' + r.status);
+    lastSent = sig; SY.last = new Date().toISOString(); SY.err = null;
+  } catch (e) {
+    SY.err = e instanceof TypeError ? 'Offline. The widget will update next time you have internet.' : e.message;
+  }
+  saveSync(); showSyncStatus();
+}
+function syncStatusHTML() {
+  if (SY.err) return `<i></i>${esc(SY.err)}`;
+  if (!SY.last) return '<i></i>Not updated yet';
+  const min = Math.round((Date.now() - new Date(SY.last)) / 60000);
+  return `<i></i>Widget data updated ${min < 1 ? 'just now' : min < 60 ? min + ' min ago' : new Date(SY.last).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+}
+function showSyncStatus() {
+  const el = document.getElementById('syncStatus');
+  if (el) { el.innerHTML = syncStatusHTML(); el.classList.toggle('bad', !!SY.err); }
+}
+let WIDGET_SRC = null;
+fetch('widget.js', { cache: 'no-cache' }).then(r => r.ok ? r.text() : null).then(t => { WIDGET_SRC = t; }).catch(() => {});
 const G = id => S.goals.find(g => g.id === id);
 const T = id => S.tasks.find(k => k.id === id);
 const P = id => S.templates.find(p => p.id === id);
@@ -351,11 +403,34 @@ function vGoals() {
     <button class="btn" data-act="copygoals" ${S.goals.length ? '' : 'disabled style="opacity:.5"'}>Copy goals as text</button>
     <p class="small" style="margin-top:10px">If you'd rather have a widget: paste the copied text into a note, then add the Notes widget to your home screen and pick that note.</p></div>`;
 
+  h += `<h3>Home screen widget</h3><div class="card">${widgetCard()}</div>`;
+
   h += `<h3>Daily nudge</h3><div class="card"><p>In the Reminders app, make a reminder called “Plan my day” for 8:00 AM, repeating every day. When it goes off, open this app and star your 3 must-dos.</p></div>`;
 
   h += `<h3>Backup</h3><div class="card"><p>Your tasks are saved only on this phone. Export a backup now and then.</p>
     <button class="btn" data-act="export">Export backup</button><button class="btn" data-act="import">Restore from backup</button></div>`;
   return h;
+}
+
+function widgetCard() {
+  if (!SY.gistId) return `<p>Show today's tasks on your home screen with the free <b style="color:var(--text)">Scriptable</b> app. One-time setup, about 10 minutes.</p>
+    <ol class="steps" style="margin:0 0 12px">
+      <li>Install <b>Scriptable</b> from the App Store.</li>
+      <li>Tap <b>Create GitHub key</b>. Sign in, set <b>Expiration</b> to <b>No expiration</b>, scroll down, tap <b>Generate token</b>, and copy the key (starts with <b>ghp_</b>).</li>
+      <li>Come back here, paste it below, and tap <b>Connect</b>.</li></ol>
+    <a class="btn" href="https://github.com/settings/tokens/new?scopes=gist&description=Today%20app%20widget" target="_blank" rel="noopener">Create GitHub key</a>
+    <input id="ghToken" class="field" type="password" placeholder="Paste key here" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="btn primary" data-act="connect">Connect</button>
+    <p class="small" style="margin-top:10px">The key can only create and edit private notes (gists) in your GitHub account. It's stored only on this phone.</p>`;
+  return `<p id="syncStatus" class="status ${SY.err ? 'bad' : ''}">${syncStatusHTML()}</p>
+    <button class="btn primary" data-act="copyscript">Copy widget script</button>
+    <ol class="steps">
+      <li>Open <b>Scriptable</b>, tap <b>+</b> (top right), and paste. Tap the title at the top, name it <b>Today</b>, then tap <b>Done</b>.</li>
+      <li>On your home screen, press and hold an empty spot → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b>. Pick the medium or large size and tap <b>Add Widget</b>.</li>
+      <li>Press and hold the new widget → <b>Edit Widget</b> → set <b>Script</b> to <b>Today</b>.</li></ol>
+    <p class="small" style="margin-top:10px">The widget refreshes on its own every 15–30 minutes. Check tasks off here in the app.</p>
+    <button class="btn" data-act="syncnow">Update widget data now</button>
+    <button class="btn" data-act="disconnect" style="color:var(--danger)">Disconnect</button>`;
 }
 
 const VIEWS = { today: vToday, later: vLater, week: vWeek, goals: vGoals };
@@ -611,6 +686,43 @@ document.getElementById('view').addEventListener('click', async e => {
     case 'export':
       return shareFile(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' }), `today-backup-${t}.json`, 'application/json');
     case 'import': return document.getElementById('importFile').click();
+    case 'connect': {
+      const tok = document.getElementById('ghToken').value.trim();
+      if (!tok) return toast('Paste your GitHub key first');
+      el.disabled = true; el.textContent = 'Connecting…';
+      try {
+        const r = await fetch('https://api.github.com/gists', { method: 'POST', headers: ghHeaders(tok),
+          body: JSON.stringify({ description: 'Today app widget data', public: false, files: { 'today.json': { content: JSON.stringify(widgetPayload()) } } }) });
+        if (r.status === 401 || r.status === 403 || r.status === 404) throw new Error("GitHub didn't accept that key. Make sure the “gist” box was checked when you made it.");
+        if (!r.ok) throw new Error('GitHub error ' + r.status + '. Try again.');
+        const j = await r.json();
+        SY = { token: tok, gistId: j.id, last: new Date().toISOString(), err: null }; saveSync();
+        lastSent = ''; render(); toast('Connected. Now copy the widget script.');
+      } catch (err) {
+        el.disabled = false; el.textContent = 'Connect';
+        toast(err instanceof TypeError ? "Couldn't reach GitHub. Check your internet." : err.message);
+      }
+      return;
+    }
+    case 'copyscript': {
+      if (!WIDGET_SRC) return toast('Still loading. Try again in a second.');
+      const src = WIDGET_SRC.replace('PASTE_WIDGET_ID_HERE', SY.gistId);
+      try { await navigator.clipboard.writeText(src); toast('Copied. Now open Scriptable and paste.'); }
+      catch (err) {
+        openSheet(`<h2>Widget script</h2><p class="sub">Press and hold inside the box → Select All → Copy.</p>
+          <textarea readonly style="width:100%;min-height:320px;font:12px ui-monospace,monospace;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--surface)">${esc(src)}</textarea>
+          <div class="actions"><span class="sp"></span><button class="ghost" data-x="cancel">Done</button></div>`);
+      }
+      return;
+    }
+    case 'syncnow':
+      lastSent = ''; el.textContent = 'Updating…';
+      await pushSync(); el.textContent = 'Update widget data now';
+      toast(SY.err ? SY.err : 'Widget data updated');
+      return;
+    case 'disconnect':
+      if (!confirm('Disconnect the widget? It will stop updating. (You can also delete the key at github.com/settings/tokens.)')) return;
+      SY = {}; saveSync(); render(); return;
   }
   save(); render();
 });
@@ -625,11 +737,15 @@ document.getElementById('importFile').addEventListener('change', async e => {
   } catch (err) { toast("That file doesn't look like a backup from this app"); }
 });
 // If the app stays open past midnight, roll over when you come back to it.
-document.addEventListener('visibilitychange', () => { if (!document.hidden && rollDay()) render(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return pushSync(true);   // send the latest list before iOS suspends the app
+  if (rollDay()) render();
+  pushSync();
+});
 
 /* ---------- start ---------- */
 try { const s = sessionStorage.getItem('tab'); if (VIEWS[s]) tab = s; } catch (e) {}
-rollDay(); render();
+rollDay(); render(); pushSync();
 navigator.storage?.persist?.();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
