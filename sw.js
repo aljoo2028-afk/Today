@@ -1,6 +1,6 @@
 // Offline support: always try the network first (so updates show up), fall back to cache.
-const C = 'today-v1';
-const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const C = 'today-v2';
+const FILES = ['./', 'index.html', 'manifest.webmanifest', 'widget.js', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(C).then(c => c.addAll(FILES)));
@@ -16,7 +16,7 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
   e.respondWith(
     fetch(e.request)
       .then(r => { const cp = r.clone(); caches.open(C).then(c => c.put(e.request, cp)); return r; })
